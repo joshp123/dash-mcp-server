@@ -139,9 +139,24 @@ class SearchResult(BaseModel):
     tags: Optional[str] = Field(description="Tags (snippet results only)", default=None)
 
 
+def estimate_tokens(obj) -> int:
+    """Estimate token count for a serialized object. Rough approximation: 1 token ≈ 4 characters."""
+    if isinstance(obj, str):
+        return max(1, len(obj) // 4)
+    elif isinstance(obj, (list, tuple)):
+        return sum(estimate_tokens(item) for item in obj)
+    elif isinstance(obj, dict):
+        return sum(estimate_tokens(k) + estimate_tokens(v) for k, v in obj.items())
+    elif hasattr(obj, 'model_dump'):  # Pydantic model
+        return estimate_tokens(obj.model_dump())
+    else:
+        return max(1, len(str(obj)) // 4)
+
+
 @mcp.tool()
 async def list_installed_docsets(ctx: Context) -> list[DocsetInfo]:
-    """List all installed documentation sets in Dash. An empty list is returned if the user has no docsets installed"""
+    """List all installed documentation sets in Dash. An empty list is returned if the user has no docsets installed. 
+    Results are automatically truncated if they would exceed 25,000 tokens."""
     try:
         base_url = await working_api_base_url(ctx)
         if base_url is None:
@@ -156,16 +171,35 @@ async def list_installed_docsets(ctx: Context) -> list[DocsetInfo]:
         docsets = result.get("docsets", [])
         await ctx.info(f"Found {len(docsets)} installed docsets")
         
-        return [
-            DocsetInfo(
+        # Build result list with token limit checking
+        token_limit = 25000
+        current_tokens = 100  # Base overhead for response structure
+        limited_docsets = []
+        
+        for docset in docsets:
+            docset_info = DocsetInfo(
                 name=docset["name"],
                 identifier=docset["identifier"],
                 platform=docset["platform"],
                 full_text_search=docset["full_text_search"],
                 notice=docset.get("notice")
             )
-            for docset in docsets
-        ]
+            
+            # Estimate tokens for this docset
+            docset_tokens = estimate_tokens(docset_info)
+            
+            if current_tokens + docset_tokens > token_limit:
+                await ctx.warning(f"Token limit reached. Returning {len(limited_docsets)} of {len(docsets)} docsets to stay under 25k token limit.")
+                break
+                
+            limited_docsets.append(docset_info)
+            current_tokens += docset_tokens
+        
+        if len(limited_docsets) < len(docsets):
+            await ctx.info(f"Returned {len(limited_docsets)} docsets (truncated from {len(docsets)} due to token limit)")
+        
+        return limited_docsets
+        
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 404:
             await ctx.warning("No docsets found. Install some in Settings > Downloads.")
