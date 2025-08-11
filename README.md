@@ -34,7 +34,7 @@ This is a work in progress. Any suggestions are welcome!
 
 ## Configuration
 
-### Using uvx (recommended)
+### Using uvx
 
 ```bash
 brew install uv
