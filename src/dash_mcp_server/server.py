@@ -227,6 +227,8 @@ async def search_documentation(
         docset_identifiers: Comma-separated list of docset identifiers to search in (from list_installed_docsets)
         search_snippets: Whether to include snippets in search results
         max_results: Maximum number of results to return (1-1000)
+    
+    Results are automatically truncated if they would exceed 25,000 tokens.
     """
     if not query.strip():
         await ctx.error("Query cannot be empty")
@@ -263,8 +265,13 @@ async def search_documentation(
         results = result.get("results", [])
         await ctx.info(f"Found {len(results)} results")
         
-        return [
-            SearchResult(
+        # Build result list with token limit checking
+        token_limit = 25000
+        current_tokens = 100  # Base overhead for response structure
+        limited_results = []
+        
+        for item in results:
+            search_result = SearchResult(
                 name=item["name"],
                 type=item["type"],
                 platform=item["platform"],
@@ -274,8 +281,21 @@ async def search_documentation(
                 language=item.get("language"),
                 tags=item.get("tags")
             )
-            for item in results
-        ]
+            
+            # Estimate tokens for this result
+            result_tokens = estimate_tokens(search_result)
+            
+            if current_tokens + result_tokens > token_limit:
+                await ctx.warning(f"Token limit reached. Returning {len(limited_results)} of {len(results)} results to stay under 25k token limit.")
+                break
+                
+            limited_results.append(search_result)
+            current_tokens += result_tokens
+        
+        if len(limited_results) < len(results):
+            await ctx.info(f"Returned {len(limited_results)} results (truncated from {len(results)} due to token limit)")
+        
+        return limited_results
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 400:
             await ctx.error(f"Bad request: {e.response.text}")
