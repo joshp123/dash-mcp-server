@@ -215,7 +215,7 @@ async def list_installed_docsets(ctx: Context) -> list[DocsetInfo]:
 async def search_documentation(
     ctx: Context,
     query: str,
-    docset_identifiers: Optional[str] = None,
+    docset_identifiers: str,
     search_snippets: bool = True,
     max_results: int = 100,
 ) -> list[SearchResult]:
@@ -234,6 +234,10 @@ async def search_documentation(
         await ctx.error("Query cannot be empty")
         raise ValueError("Query cannot be empty")
     
+    if not docset_identifiers.strip():
+        await ctx.error("docset_identifiers cannot be empty. Get the docset identifiers using list_installed_docsets")
+        raise ValueError("docset_identifiers cannot be empty. Get the docset identifiers using list_installed_docsets")
+    
     if max_results < 1 or max_results > 1000:
         await ctx.error("max_results must be between 1 and 1000")
         raise ValueError("max_results must be between 1 and 1000")
@@ -245,11 +249,10 @@ async def search_documentation(
         
         params = {
             "query": query,
+            "docset_identifiers": docset_identifiers,
             "search_snippets": search_snippets,
             "max_results": max_results,
         }
-        if docset_identifiers:
-            params["docset_identifiers"] = docset_identifiers
         
         await ctx.debug(f"Searching Dash API with query: '{query}'")
         
