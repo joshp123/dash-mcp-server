@@ -118,7 +118,7 @@ async def ensure_dash_running(ctx: Context) -> bool:
 
 
 
-class DocsetInfo(BaseModel):
+class DocsetResult(BaseModel):
     """Information about a docset."""
     name: str = Field(description="Display name of the docset")
     identifier: str = Field(description="Unique identifier")
@@ -127,16 +127,28 @@ class DocsetInfo(BaseModel):
     notice: Optional[str] = Field(description="Optional notice about the docset status", default=None)
 
 
+class DocsetResults(BaseModel):
+    """Result from listing docsets."""
+    docsets: list[DocsetResult] = Field(description="List of installed docsets", default_factory=list)
+    error: Optional[str] = Field(description="Error message if there was an issue", default=None)
+
+
 class SearchResult(BaseModel):
     """A search result from documentation."""
     name: str = Field(description="Name of the documentation entry")
     type: str = Field(description="Type of result (Function, Class, etc.)")
-    platform: str = Field(description="Platform of the result")
+    platform: Optional[str] = Field(description="Platform of the result", default=None)
     load_url: str = Field(description="URL to load the documentation")
     docset: Optional[str] = Field(description="Name of the docset", default=None)
     description: Optional[str] = Field(description="Additional description", default=None)
     language: Optional[str] = Field(description="Programming language (snippet results only)", default=None)
     tags: Optional[str] = Field(description="Tags (snippet results only)", default=None)
+
+
+class SearchResults(BaseModel):
+    """Result from searching documentation."""
+    results: list[SearchResult] = Field(description="List of search results", default_factory=list)
+    error: Optional[str] = Field(description="Error message if there was an issue", default=None)
 
 
 def estimate_tokens(obj) -> int:
@@ -154,13 +166,13 @@ def estimate_tokens(obj) -> int:
 
 
 @mcp.tool()
-async def list_installed_docsets(ctx: Context) -> list[DocsetInfo]:
+async def list_installed_docsets(ctx: Context) -> DocsetResults:
     """List all installed documentation sets in Dash. An empty list is returned if the user has no docsets installed. 
     Results are automatically truncated if they would exceed 25,000 tokens."""
     try:
         base_url = await working_api_base_url(ctx)
         if base_url is None:
-            return []
+            return DocsetResults(error="Failed to connect to Dash API Server. Please ensure Dash is running and the API server is enabled (Settings > Integration, or run open -b com.kapeli.dashdoc, followed by defaults write com.kapeli.dashdoc DHAPIServerEnabled YES).")
         await ctx.debug("Fetching installed docsets from Dash API")
         
         with httpx.Client(timeout=30.0) as client:
@@ -177,7 +189,7 @@ async def list_installed_docsets(ctx: Context) -> list[DocsetInfo]:
         limited_docsets = []
         
         for docset in docsets:
-            docset_info = DocsetInfo(
+            docset_info = DocsetResult(
                 name=docset["name"],
                 identifier=docset["identifier"],
                 platform=docset["platform"],
@@ -198,17 +210,16 @@ async def list_installed_docsets(ctx: Context) -> list[DocsetInfo]:
         if len(limited_docsets) < len(docsets):
             await ctx.info(f"Returned {len(limited_docsets)} docsets (truncated from {len(docsets)} due to token limit)")
         
-        return limited_docsets
+        return DocsetResults(docsets=limited_docsets)
         
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 404:
             await ctx.warning("No docsets found. Install some in Settings > Downloads.")
-            return []
-        await ctx.error(f"HTTP error: {e}")
-        return []
+            return DocsetResults(error="No docsets found. Instruct the user to install some docsets in Settings > Downloads.")
+        return DocsetResults(error=f"HTTP error: {e}")
     except Exception as e:
         await ctx.error(f"Failed to get installed docsets: {e}")
-        return []
+        return DocsetResults(error=f"Failed to get installed docsets: {e}")
 
 
 @mcp.tool()
@@ -218,7 +229,7 @@ async def search_documentation(
     docset_identifiers: str,
     search_snippets: bool = True,
     max_results: int = 100,
-) -> list[SearchResult]:
+) -> SearchResults:
     """
     Search for documentation across docset identifiers and snippets.
     
@@ -232,20 +243,20 @@ async def search_documentation(
     """
     if not query.strip():
         await ctx.error("Query cannot be empty")
-        raise ValueError("Query cannot be empty")
+        return SearchResults(error="Query cannot be empty")
     
     if not docset_identifiers.strip():
         await ctx.error("docset_identifiers cannot be empty. Get the docset identifiers using list_installed_docsets")
-        raise ValueError("docset_identifiers cannot be empty. Get the docset identifiers using list_installed_docsets")
+        return SearchResults(error="docset_identifiers cannot be empty. Get the docset identifiers using list_installed_docsets")
     
     if max_results < 1 or max_results > 1000:
         await ctx.error("max_results must be between 1 and 1000")
-        raise ValueError("max_results must be between 1 and 1000")
+        return SearchResults(error="max_results must be between 1 and 1000")
     
     try:
         base_url = await working_api_base_url(ctx)
         if base_url is None:
-            return []
+            return SearchResults(error="Failed to connect to Dash API Server. Please ensure Dash is running and the API server is enabled (Settings > Integration, or run open -b com.kapeli.dashdoc, followed by defaults write com.kapeli.dashdoc DHAPIServerEnabled YES).")
         
         params = {
             "query": query,
@@ -262,8 +273,10 @@ async def search_documentation(
             result = response.json()
         
         # Check for warning message in response
+        warning_message = None
         if "message" in result:
-            await ctx.warning(result["message"])
+            warning_message = result["message"]
+            await ctx.warning(warning_message)
         
         results = result.get("results", [])
         await ctx.info(f"Found {len(results)} results")
@@ -277,7 +290,7 @@ async def search_documentation(
             search_result = SearchResult(
                 name=item["name"],
                 type=item["type"],
-                platform=item["platform"],
+                platform=item.get("platform"),
                 load_url=item["load_url"],
                 docset=item.get("docset"),
                 description=item.get("description"),
@@ -298,19 +311,32 @@ async def search_documentation(
         if len(limited_results) < len(results):
             await ctx.info(f"Returned {len(limited_results)} results (truncated from {len(results)} due to token limit)")
         
-        return limited_results
+        return SearchResults(results=limited_results, error=warning_message)
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 400:
-            await ctx.error(f"Bad request: {e.response.text}")
-            return []
+            error_text = e.response.text
+            if "Docset with identifier" in error_text and "not found" in error_text:
+                await ctx.error("Invalid docset identifier. Run list_installed_docsets to see available docsets.")
+                return SearchResults(error="Invalid docset identifier. Run list_installed_docsets to see available docsets, then use the exact identifier from that list.")
+            elif "No docsets found" in error_text:
+                await ctx.error("No valid docsets found for search.")
+                return SearchResults(error="No valid docsets found for search. Either provide valid docset identifiers from list_installed_docsets, or set search_snippets=true to search snippets only.")
+            else:
+                await ctx.error(f"Bad request: {error_text}")
+                return SearchResults(error=f"Bad request: {error_text}")
         elif e.response.status_code == 403:
-            await ctx.error(f"Forbidden: {e.response.text}")
-            return []
+            error_text = e.response.text
+            if "API access blocked due to Dash trial expiration" in error_text:
+                await ctx.error("Dash trial expired. Purchase Dash to continue using the API.")
+                return SearchResults(error="Your Dash trial has expired. Purchase Dash at https://kapeli.com/dash to continue using the API. During trial expiration, API access is blocked.")
+            else:
+                await ctx.error(f"Forbidden: {error_text}")
+                return SearchResults(error=f"Forbidden: {error_text}")
         await ctx.error(f"HTTP error: {e}")
-        return []
+        return SearchResults(error=f"HTTP error: {e}")
     except Exception as e:
         await ctx.error(f"Search failed: {e}")
-        return []
+        return SearchResults(error=f"Search failed: {e}")
 
 
 @mcp.tool()
