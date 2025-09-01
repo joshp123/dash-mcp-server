@@ -10,63 +10,70 @@ from pydantic import BaseModel, Field
 mcp = FastMCP("Dash Documentation API")
 
 
-async def working_api_base_url(ctx: Context) -> Optional[str]:
-    dash_running = await ensure_dash_running(ctx)
-    if not dash_running:
-        return None
-    
-    port = get_dash_api_port()
-    if port is None:
-        # Use FastMCP elicit to ask user if they want to enable Dash API Server
-        response = await ctx.elicit(
-            "The Dash API Server is not enabled. It must be enabled in Dash Settings > Integration for this MCP server to work. "
-            "Would you like me to try to enable it for you automatically?",
-            ["Yes, enable it automatically", "No, I'll do it manually"]
-        )
-        
-        if response == "Yes, enable it automatically":
-            try:
-                subprocess.run(
-                    ["defaults", "write", "com.kapeli.dashdoc", "DHAPIServerEnabled", "YES"],
-                    check=True,
-                    timeout=10
-                )
-                # Wait a moment for Dash to pick up the change
-                import time
-                time.sleep(2)
-                
-                # Try to get the port again
-                port = get_dash_api_port()
-                if port is None:
-                    await ctx.error("Failed to enable Dash API Server. Please make sure Dash is running and that the Dash API Server is enabled in Settings > Integration")
-                    return None
-            except Exception as e:
-                return None
-        else:
-            await ctx.error("Failed to connect to Dash API Server. Please make sure Dash is running and that the Dash API Server is enabled in Settings > Integration")
-            return None        
-    
-    # Test the connection by checking the health endpoint
+async def check_api_health(ctx: Context, port: int) -> bool:
+    """Check if the Dash API server is responding at the given port."""
     base_url = f"http://127.0.0.1:{port}"
     try:
         with httpx.Client(timeout=5.0) as client:
             response = client.get(f"{base_url}/health")
             response.raise_for_status()
         await ctx.debug(f"Successfully connected to Dash API at {base_url}")
-        return base_url
+        return True
     except Exception as e:
-        await ctx.error("Failed to connect to Dash API Server. Please make sure Dash is running and that the Dash API Server is enabled in Settings > Integration")
+        await ctx.debug(f"Health check failed for {base_url}: {e}")
+        return False
+
+
+async def working_api_base_url(ctx: Context) -> Optional[str]:
+    dash_running = await ensure_dash_running(ctx)
+    if not dash_running:
         return None
+    
+    port = await get_dash_api_port(ctx)
+    if port is None:
+        # Try to automatically enable the Dash API Server
+        await ctx.info("The Dash API Server is not enabled. Attempting to enable it automatically...")
+        try:
+            subprocess.run(
+                ["defaults", "write", "com.kapeli.dashdoc", "DHAPIServerEnabled", "YES"],
+                check=True,
+                timeout=10
+            )
+            # Wait a moment for Dash to pick up the change
+            import time
+            time.sleep(2)
+            
+            # Try to get the port again
+            port = await get_dash_api_port(ctx)
+            if port is None:
+                await ctx.error("Failed to enable Dash API Server automatically. Please enable it manually in Dash Settings > Integration")
+                return None
+            else:
+                await ctx.info("Successfully enabled Dash API Server")
+        except Exception as e:
+            await ctx.error("Failed to enable Dash API Server automatically. Please enable it manually in Dash Settings > Integration")
+            return None
+    
+    return f"http://127.0.0.1:{port}"
 
 
-def get_dash_api_port() -> Optional[int]:
-    """Get the Dash API port from the status.json file."""
+async def get_dash_api_port(ctx: Context) -> Optional[int]:
+    """Get the Dash API port from the status.json file and verify the API server is responding."""
     status_file = Path.home() / "Library" / "Application Support" / "Dash" / ".dash_api_server" / "status.json"
     
     try:
         with open(status_file, 'r') as f:
             status_data = json.load(f)
-            return status_data.get('port')
+            port = status_data.get('port')
+            if port is None:
+                return None
+                
+        # Check if the API server is actually responding
+        if await check_api_health(ctx, port):
+            return port
+        else:
+            return None
+            
     except (FileNotFoundError, json.JSONDecodeError, KeyError):
         return None
 
