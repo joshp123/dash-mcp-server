@@ -401,20 +401,32 @@ async def enable_docset_fts(ctx: Context, identifier: str) -> bool:
             response = client.get(f"{base_url}/docsets/enable_fts", params={"identifier": identifier})
             response.raise_for_status()
             result = response.json()
+            
+            # Check if the API call was successful
+            if result.get("success", False):
+                await ctx.info(f"Successfully enabled FTS for docset: {identifier}")
+                return True
+            else:
+                error_msg = result.get("error", "Unknown error")
+                await ctx.error(f"Failed to enable FTS: {error_msg}")
+                return False
         
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 400:
-            await ctx.error(f"Bad request: {e.response.text}")
+            error_text = e.response.text
+            await ctx.error(f"Bad request: {error_text}")
             return False
         elif e.response.status_code == 404:
-            await ctx.error(f"Docset not found: {identifier}")
+            await ctx.error(f"Docset not found: {identifier}. The enable_fts endpoint may not be available in this Dash version.")
             return False
-        await ctx.error(f"HTTP error: {e}")
+        elif e.response.status_code == 501:
+            await ctx.error(f"FTS enablement not supported: The enable_fts endpoint is not implemented in this Dash version.")
+            return False
+        await ctx.error(f"HTTP error {e.response.status_code}: {e.response.text}")
         return False
     except Exception as e:
         await ctx.error(f"Failed to enable FTS: {e}")
         return False
-    return True
 
 def main():
     mcp.run()
