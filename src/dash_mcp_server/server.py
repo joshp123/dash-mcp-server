@@ -79,15 +79,36 @@ async def get_dash_api_port(ctx: Context) -> Optional[int]:
 
 
 def check_dash_running() -> bool:
-    """Check if Dash app is running by looking for the process."""
+    """Check if Dash app is running using multiple detection methods."""
     try:
-        # Use pgrep to check for Dash process
+        # Method 1: Check for Dash process by bundle identifier (most reliable)
         result = subprocess.run(
-            ["pgrep", "-f", "Dash"],
+            ["pgrep", "-f", "com.kapeli.dashdoc"],
             capture_output=True,
             timeout=5
         )
-        return result.returncode == 0
+        if result.returncode == 0:
+            return True
+            
+        # Method 2: Check for Dash.app process
+        result = subprocess.run(
+            ["pgrep", "-f", "Dash.app"],
+            capture_output=True,
+            timeout=5
+        )
+        if result.returncode == 0:
+            return True
+            
+        # Method 3: Check if Dash is in the dock (macOS specific)
+        result = subprocess.run(
+            ["osascript", "-e", "tell application \"System Events\" to get name of every process whose name contains \"Dash\""],
+            capture_output=True,
+            timeout=5
+        )
+        if result.returncode == 0 and "Dash" in result.stdout.decode():
+            return True
+            
+        return False
     except Exception:
         return False
 
