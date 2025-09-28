@@ -323,26 +323,41 @@ async def search_documentation(
         limited_results = []
         
         for item in results:
-            search_result = SearchResult(
-                name=item["name"],
-                type=item["type"],
-                platform=item.get("platform"),
-                load_url=item["load_url"],
-                docset=item.get("docset"),
-                description=item.get("description"),
-                language=item.get("language"),
-                tags=item.get("tags")
-            )
-            
-            # Estimate tokens for this result
-            result_tokens = estimate_tokens(search_result)
-            
-            if current_tokens + result_tokens > token_limit:
-                await ctx.warning(f"Token limit reached. Returning {len(limited_results)} of {len(results)} results to stay under 25k token limit.")
-                break
+            try:
+                # Check if this is a properly formatted result
+                if not isinstance(item, dict):
+                    await ctx.warning(f"Skipping non-dict result: {type(item)}")
+                    continue
+                    
+                search_result = SearchResult(
+                    name=item.get("name", "Unknown"),
+                    type=item.get("type", "Unknown"),
+                    platform=item.get("platform"),
+                    load_url=item.get("load_url", ""),
+                    docset=item.get("docset"),
+                    description=item.get("description"),
+                    language=item.get("language"),
+                    tags=item.get("tags")
+                )
                 
-            limited_results.append(search_result)
-            current_tokens += result_tokens
+                # Check if this looks like a valid result (not all defaults)
+                if (search_result.name == "Unknown" and search_result.type == "Unknown" and 
+                    not search_result.load_url and not search_result.docset):
+                    await ctx.debug(f"Skipping result with no useful data: {item}")
+                    continue
+                
+                # Estimate tokens for this result
+                result_tokens = estimate_tokens(search_result)
+                
+                if current_tokens + result_tokens > token_limit:
+                    await ctx.warning(f"Token limit reached. Returning {len(limited_results)} of {len(results)} results to stay under 25k token limit.")
+                    break
+                    
+                limited_results.append(search_result)
+                current_tokens += result_tokens
+            except Exception as e:
+                await ctx.warning(f"Skipping malformed search result: {e}")
+                continue
         
         if len(limited_results) < len(results):
             await ctx.info(f"Returned {len(limited_results)} results (truncated from {len(results)} due to token limit)")
