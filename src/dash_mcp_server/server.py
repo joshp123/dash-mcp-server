@@ -324,7 +324,7 @@ async def search_documentation(
             return SearchResults(
                 results=[], 
                 error=None,
-                message="No results found for your search query. Try using simpler terms or different keywords."
+                message="No results found. Use ONLY SINGLE WORDS or SINGLE TECHNOLOGIES. Examples: 'WidgetKit', 'complications', 'SwiftUI'. Longer queries perform worse - keep it simple!"
             )
         
         # Build result list with token limit checking
@@ -388,7 +388,7 @@ async def search_documentation(
                 return SearchResults(
                     results=[], 
                     error=None,
-                    message="No results found for your search query. Try using simpler terms or different keywords."
+                    message="No results found. Use ONLY SINGLE WORDS or SINGLE TECHNOLOGIES. Examples: 'WidgetKit', 'complications', 'SwiftUI'. Longer queries perform worse - keep it simple!"
                 )
         
         if len(limited_results) < len(results):
