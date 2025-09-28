@@ -10,18 +10,26 @@ from pydantic import BaseModel, Field
 mcp = FastMCP("Dash Documentation API")
 
 
-async def check_api_health(ctx: Context, port: int) -> bool:
-    """Check if the Dash API server is responding at the given port."""
+async def check_api_health(ctx: Context, port: int, max_retries: int = 3) -> bool:
+    """Check if the Dash API server is responding at the given port with retry logic."""
     base_url = f"http://127.0.0.1:{port}"
-    try:
-        with httpx.Client(timeout=5.0) as client:
-            response = client.get(f"{base_url}/health")
-            response.raise_for_status()
-        await ctx.debug(f"Successfully connected to Dash API at {base_url}")
-        return True
-    except Exception as e:
-        await ctx.debug(f"Health check failed for {base_url}: {e}")
-        return False
+    
+    for attempt in range(max_retries):
+        try:
+            with httpx.Client(timeout=5.0) as client:
+                response = client.get(f"{base_url}/health")
+                response.raise_for_status()
+            await ctx.debug(f"Successfully connected to Dash API at {base_url}")
+            return True
+        except Exception as e:
+            if attempt < max_retries - 1:
+                await ctx.debug(f"Health check attempt {attempt + 1} failed for {base_url}: {e}. Retrying...")
+                import time
+                time.sleep(1)  # Brief delay before retry
+            else:
+                await ctx.debug(f"Health check failed for {base_url} after {max_retries} attempts: {e}")
+                return False
+    return False
 
 
 async def working_api_base_url(ctx: Context) -> Optional[str]:
