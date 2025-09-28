@@ -185,6 +185,7 @@ class SearchResults(BaseModel):
     """Result from searching documentation."""
     results: list[SearchResult] = Field(description="List of search results", default_factory=list)
     error: Optional[str] = Field(description="Error message if there was an issue", default=None)
+    message: Optional[str] = Field(description="Informational message about the search results", default=None)
 
 
 def estimate_tokens(obj) -> int:
@@ -317,10 +318,20 @@ async def search_documentation(
         results = result.get("results", [])
         await ctx.info(f"Found {len(results)} results")
         
+        # Check if we have no results vs malformed results
+        if len(results) == 0:
+            await ctx.info("No results found for the search query")
+            return SearchResults(
+                results=[], 
+                error=None,
+                message="No results found for your search query. Try using simpler terms or different keywords."
+            )
+        
         # Build result list with token limit checking
         token_limit = 25000
         current_tokens = 100  # Base overhead for response structure
         limited_results = []
+        malformed_count = 0
         
         for item in results:
             try:
@@ -359,6 +370,27 @@ async def search_documentation(
                 await ctx.warning(f"Skipping malformed search result: {e}")
                 continue
         
+        # Report on malformed results
+        if malformed_count > 0:
+            await ctx.warning(f"Skipped {malformed_count} malformed results out of {len(results)} total")
+        
+        if len(limited_results) == 0 and len(results) > 0:
+            # Check if we had actual malformed results vs just empty results
+            if malformed_count > 0:
+                await ctx.warning("All results were malformed - no valid results to return")
+                return SearchResults(
+                    results=[], 
+                    error=None,
+                    message="Search returned results but they were malformed. Try a different search query."
+                )
+            else:
+                await ctx.info("No results found for the search query")
+                return SearchResults(
+                    results=[], 
+                    error=None,
+                    message="No results found for your search query. Try using simpler terms or different keywords."
+                )
+        
         if len(limited_results) < len(results):
             await ctx.info(f"Returned {len(limited_results)} results (truncated from {len(results)} due to token limit)")
         
@@ -387,7 +419,13 @@ async def search_documentation(
         return SearchResults(error=f"HTTP error: {e}. Please ensure Dash is running and the API server is enabled (Settings > Integration, or run open -b com.kapeli.dashdoc, followed by defaults write com.kapeli.dashdoc DHAPIServerEnabled YES).")
     except Exception as e:
         await ctx.error(f"Search failed: {e}")
-        return SearchResults(error=f"Search failed: {e}. Please ensure Dash is running and the API server is enabled (Settings > Integration, or run open -b com.kapeli.dashdoc, followed by defaults write com.kapeli.dashdoc DHAPIServerEnabled YES).")
+        # Provide more specific error information instead of generic server message
+        if "name" in str(e):
+            return SearchResults(error=f"Search failed due to malformed API response: {e}. The Dash API returned results with missing required fields.")
+        elif "KeyError" in str(e):
+            return SearchResults(error=f"Search failed due to API response format issue: {e}. The Dash API returned unexpected data structure.")
+        else:
+            return SearchResults(error=f"Search failed: {e}")
 
 
 @mcp.tool()
